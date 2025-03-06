@@ -106,16 +106,29 @@ class FoldersCopyApp:
         if current_value == "Yes":
             # 如果当前是Yes，点击后变为No
             values[column] = "No"
+            self.tree.item(item, values=values)
         else:
-            # 如果当前是No，点击后变为Yes，并将另一个方向设为No
-            values[3] = "No"  # Reset Source->Target
-            values[4] = "No"  # Reset Target->Source
-            values[column] = "Yes"
+            # 如果当前是No，点击后需要检查文件
+            source_dir = values[2]  # Source directory
+            target_dir = values[1]  # Target directory
             
-        self.tree.item(item, values=values)
+            # 确定是哪个方向并进行相应的检查
+            is_source_to_target = (column == 3)
+            if self.compare_directories(source_dir, target_dir, is_source_to_target):
+                # 用户确认或没有更新的文件，设置为Yes
+                values[3] = "No"  # Reset Source->Target
+                values[4] = "No"  # Reset Target->Source
+                values[column] = "Yes"
+                self.tree.item(item, values=values)
+
     def add_item(self):
         self.edit_window = tk.Toplevel(self.root)
         self.edit_window.title("Add Item")
+        # 确保窗口置顶的设置
+        self.edit_window.transient(self.root)
+        self.edit_window.grab_set()
+        self.edit_window.focus_set()
+        self.edit_window.resizable(False, False)
         self.create_edit_form()
         
     def edit_item(self):
@@ -126,13 +139,59 @@ class FoldersCopyApp:
         
         self.edit_window = tk.Toplevel(self.root)
         self.edit_window.title("Edit Item")
+        # 确保窗口置顶的设置
+        self.edit_window.transient(self.root)
+        self.edit_window.grab_set()
+        self.edit_window.focus_set()
+        self.edit_window.resizable(False, False)
         
         item = self.tree.item(selected[0])
         self.create_edit_form(item['values'])
+
+    def compare_directories(self, source_dir, target_dir, source_to_target=True):
+        """比较两个目录中文件的修改时间"""
+        if not (os.path.exists(source_dir) and os.path.exists(target_dir)):
+            return True  # 如果有目录不存在，允许复制
         
+        newer_files_found = False
+        check_dir = target_dir if source_to_target else source_dir
+        
+        # 遍历源目录中的所有文件
+        for root, _, files in os.walk(source_dir):
+            relative_path = os.path.relpath(root, source_dir)
+            for file in files:
+                source_file = os.path.join(root, file)
+                target_file = os.path.join(target_dir, relative_path, file)
+                
+                # 如果目标文件存在，比较修改时间
+                if os.path.exists(target_file):
+                    source_time = os.path.getmtime(source_file)
+                    target_time = os.path.getmtime(target_file)
+                    
+                    # 检查是否有更新的文件
+                    if source_to_target and target_time > source_time:
+                        newer_files_found = True
+                        break
+                    elif not source_to_target and source_time > target_time:
+                        newer_files_found = True
+                        break
+                    
+            if newer_files_found:
+                break
+            
+        if newer_files_found:
+            direction = "目标文件夹" if source_to_target else "源文件夹"
+            message = f"{direction} ({check_dir}) 中的文件更新，确定覆盖吗？"
+            return messagebox.askyesno("确认覆盖", message)
+        
+        return True
+
     def create_edit_form(self, values=None):
         form = ttk.Frame(self.edit_window, padding="10")
         form.grid(row=0, column=0)
+        
+        # 在窗口关闭时释放grab
+        self.edit_window.protocol("WM_DELETE_WINDOW", lambda: self.on_edit_window_close())
         
         # Name
         ttk.Label(form, text="Name:").grid(row=0, column=0, sticky=tk.W)
@@ -154,38 +213,24 @@ class FoldersCopyApp:
         source_entry.grid(row=2, column=1, padx=5, pady=5)
         ttk.Button(form, text="Browse", command=lambda: self.browse_directory(source_var)).grid(row=2, column=2)
         
-        # Checkboxes for direction
-        source_target_var = tk.BooleanVar(value=values[3] == "Yes" if values else False)
-        target_source_var = tk.BooleanVar(value=values[4] == "Yes" if values else False)
-        
-        ttk.Checkbutton(form, text="Source -> Target", 
-                       variable=source_target_var,
-                       command=lambda: self.ensure_one_direction(source_target_var, target_source_var)
-                       ).grid(row=3, column=1, sticky=tk.W)
-        
-        ttk.Checkbutton(form, text="Target -> Source", 
-                       variable=target_source_var,
-                       command=lambda: self.ensure_one_direction(target_source_var, source_target_var)
-                       ).grid(row=4, column=1, sticky=tk.W)
-        
         # Save button
         ttk.Button(form, text="Save",
                   command=lambda: self.save_item(name_var.get(), 
                                                target_var.get(), 
                                                source_var.get(),
-                                               source_target_var.get(),
-                                               target_source_var.get(), 
+                                               False,  # source_target 默认为 No
+                                               False,  # target_source 默认为 No
                                                values)).grid(row=5, column=1, pady=10)
 
-    def ensure_one_direction(self, current_var, other_var):
-        if current_var.get():
-            other_var.set(False)
-        
     def browse_directory(self, var):
-        directory = filedialog.askdirectory()
+        directory = filedialog.askdirectory(parent=self.edit_window)  # 指定父窗口
         if directory:
             var.set(directory)
-            
+
+    def on_edit_window_close(self):
+        self.edit_window.grab_release()
+        self.edit_window.destroy()
+        
     def save_item(self, name, target, source, source_target, target_source, old_values=None):
         if not all([name, target, source]):
             messagebox.showwarning("Warning", "Name, Target and Source fields are required")
